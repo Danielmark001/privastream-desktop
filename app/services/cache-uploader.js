@@ -1,0 +1,118 @@
+var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
+    var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
+    if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
+    else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
+    return c > 3 && r && Object.defineProperty(target, key, r), r;
+};
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+import { Service } from './core/service';
+import { Inject } from './core/injector';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import compact from 'lodash/compact';
+import { importArchiver, importAwsSdk } from '../util/slow-imports';
+export class CacheUploaderService extends Service {
+    get cacheDir() {
+        return this.appService.appDataDirectory;
+    }
+    uploadCache() {
+        return new Promise((resolve) => __awaiter(this, void 0, void 0, function* () {
+            const cacheDir = this.cacheDir;
+            const dateStr = new Date().toISOString();
+            const username = this.userService.username;
+            const keyname = `${compact([dateStr, username]).join('-')}.zip`;
+            const cacheFile = path.join(os.tmpdir(), 'slobs-cache.zip');
+            const output = fs.createWriteStream(cacheFile);
+            const archiver = (yield importArchiver()).default;
+            const archive = archiver('zip', { zlib: { level: 9 } });
+            output.on('close', () => __awaiter(this, void 0, void 0, function* () {
+                const AWS = yield importAwsSdk();
+                AWS.config.region = 'us-west-2';
+                AWS.config.credentials = new AWS.CognitoIdentityCredentials({
+                    IdentityPoolId: 'us-west-2:d5badad4-ff41-4a80-8677-e2757ab32263',
+                });
+                new AWS.S3().createPresignedPost({
+                    Bucket: 'streamlabs-obs-user-cache',
+                    Fields: { key: keyname },
+                }, (err, data) => __awaiter(this, void 0, void 0, function* () {
+                    if (err) {
+                        console.error(err);
+                    }
+                    else {
+                        const formData = new FormData();
+                        const fileBlob = yield new Promise(r => {
+                            fs.readFile(cacheFile, (err, data) => r(new Blob([data])));
+                        });
+                        const fileObj = new File([fileBlob], keyname);
+                        Object.entries(data.fields).forEach(([key, value]) => formData.append(key, value));
+                        formData.append('file', fileObj);
+                        const req = new Request(data.url, {
+                            method: 'POST',
+                            body: formData,
+                        });
+                        try {
+                            const resp = yield fetch(req);
+                            if (!resp.ok)
+                                throw new Error(yield resp.text());
+                            resolve(keyname);
+                        }
+                        catch (e) {
+                            console.error(e);
+                        }
+                    }
+                }));
+            }));
+            const serviceJson = JSON.parse(fs.readFileSync(path.join(this.cacheDir, 'service.json'), 'utf8'));
+            serviceJson.settings.key = `[delete_me]${serviceJson.settings.key}`;
+            fs.writeFileSync(path.join(this.cacheDir, 'service-protected.json'), JSON.stringify(serviceJson, null, 2));
+            archive.pipe(output);
+            this.addDirIfExists(archive, 'node-obs');
+            this.addDirIfExists(archive, 'SceneConfigs');
+            this.addDirIfExists(archive, 'SceneCollections');
+            this.addDirIfExists(archive, 'Streamlabels');
+            this.addFileIfExists(archive, 'app.log');
+            this.addFileIfExists(archive, 'crash-handler.log');
+            this.addFileIfExists(archive, 'crash-handler.log.old');
+            this.addFileIfExists(archive, 'game-overlays.log');
+            this.addFileIfExists(archive, 'game-overlays.log.old');
+            this.addFileIfExists(archive, 'long_calls.txt');
+            archive.file(path.join(cacheDir, 'basic.ini'), { name: 'basic.ini' });
+            archive.file(path.join(cacheDir, 'global.ini'), { name: 'global.ini' });
+            archive.file(path.join(cacheDir, 'service-protected.json'), { name: 'service.json' });
+            archive.file(path.join(cacheDir, 'streamEncoder.json'), { name: 'streamEncoder.json' });
+            archive.file(path.join(cacheDir, 'recordEncoder.json'), { name: 'recordEncoder.json' });
+            archive.file(path.join(cacheDir, 'window-state.json'), { name: 'window-state.json' });
+            archive.file(path.join(cacheDir, 'persistent.realm'), { name: 'persistent.realm' });
+            archive.file(path.join(cacheDir, 'ephemeral-copy.realm'), { name: 'ephemeral-copy.realm' });
+            archive.finalize();
+        }));
+    }
+    addDirIfExists(archive, name) {
+        const dirPath = path.join(this.cacheDir, name);
+        if (fs.existsSync(dirPath)) {
+            archive.directory(dirPath, name);
+        }
+    }
+    addFileIfExists(archive, name) {
+        const dirPath = path.join(this.cacheDir, name);
+        if (fs.existsSync(dirPath)) {
+            archive.file(dirPath, { name });
+        }
+    }
+}
+__decorate([
+    Inject()
+], CacheUploaderService.prototype, "userService", void 0);
+__decorate([
+    Inject()
+], CacheUploaderService.prototype, "appService", void 0);
+//# sourceMappingURL=cache-uploader.js.map

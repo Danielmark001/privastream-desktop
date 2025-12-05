@@ -1,0 +1,1 @@
+{"version":3,"file":"default-settings-data.js","sourceRoot":"","sources":["default-settings-data.ts"],"names":[],"mappings":"AAEA,MAAM,CAAC,MAAM,mBAAmB,GAAG;IACjC,MAAM,EAAE,EAAE;IACV,MAAM,EAAE,CAAC;IACT,SAAS,EAAE,GAAG;IACd,UAAU,EAAE,IAAI;IAChB,WAAW,EAAE,GAAG;IAChB,YAAY,EAAE,IAAI;IAClB,YAAY,GAAmB;IAC/B,UAAU,GAAmB;IAC7B,KAAK,GAAiB;IACtB,SAAS,GAAqB;IAC9B,OAAO,GAAkB;CAC1B,CAAC"}

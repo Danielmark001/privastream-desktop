@@ -1,0 +1,506 @@
+"""
+Face detection model for extracting blur regions.
+Processes a single frame and returns polygons/rectangles to be blurred.
+"""
+import json
+import time
+import numpy as np
+from pathlib import Path
+from typing import List, Tuple, Optional, Dict, Any
+from collections import deque
+import cv2
+from insightface.app import FaceAnalysis
+
+# Import base class
+from video_models.base.base_face_detector import BaseFaceDetector, DetectedFace
+
+
+class FaceDetector(BaseFaceDetector):
+    """
+    Face detection model that identifies faces to be blurred while whitelisting enrolled faces.
+    Returns rectangles/polygons that should be blurred instead of performing blur directly.
+    """
+
+    def __init__(self,
+                 embed_path: str = "whitelist/creator_embedding.json",
+                 gpu_id: int = 0,
+                 det_size: int = 736,  # Increased to 736 for better accuracy (optimized pipeline allows this)
+                 threshold: float = 0.45,  # More lenient threshold for better matching
+                 dilate_px: int = 12,
+                 smooth_ms: int = 300,
+                 lowlight_trigger: float = 60.0,
+                 conf_threshold: float = 0.5,
+                 nms_threshold: float = 0.4):
+        """
+        Initialize the face detector.
+
+        Args:
+            embed_path: Path to creator embedding JSON file
+            gpu_id: GPU device ID (-1 for CPU)
+            det_size: Detection model input size
+            threshold: Cosine distance threshold for face matching
+            dilate_px: Pixels to dilate detection boxes
+            smooth_ms: Temporal smoothing duration in milliseconds
+            lowlight_trigger: Mean pixel threshold to enable CLAHE enhancement
+            conf_threshold: Minimum confidence for detections (for base class)
+            nms_threshold: IoU threshold for NMS (for base class)
+        """
+        # Initialize base class
+        super().__init__(conf_threshold=conf_threshold, nms_threshold=nms_threshold)
+
+        self.embed_path = embed_path
+        self.threshold = threshold
+        self.dilate_px = dilate_px
+        self.smooth_ms = smooth_ms
+        self.lowlight_trigger = lowlight_trigger
+        self.gpu_id = gpu_id
+        self.det_size = det_size
+
+        # Load creator embedding
+        self.creator_embedding = self._load_embedding(embed_path)
+
+        # Per-room temporal tracking (fixes cross-room contamination)
+        self.room_masks = {}      # roomId -> [(expiry_time, box)]
+        self.room_vote_bufs = {}  # roomId -> deque
+        self.panic_mode = False
+
+        # Model will be initialized lazily via _initialize_model()
+        self.app = None
+        self.ctx_id = None
+
+    def _load_embedding(self, embed_path: str) -> Optional[np.ndarray]:
+        """Load creator embedding from JSON file."""
+        p = Path(embed_path)
+        if p.exists():
+            try:
+                obj = json.loads(p.read_text(encoding="utf-8"))
+                emb = np.array(obj["embedding"], dtype=float)
+                print(f"[FaceDetector] Loaded embedding: {p}")
+                return emb
+            except Exception as e:
+                print(f"[FaceDetector][WARN] Failed to read embedding; will blur all faces. {e}")
+        else:
+            print(f"[FaceDetector][WARN] Embedding file not found: {embed_path}")
+        return None
+
+    def _pick_ctx_id(self, gpu_id: int) -> int:
+        """Select appropriate context ID for face analysis."""
+        try:
+            import onnxruntime as ort
+            if "CUDAExecutionProvider" in ort.get_available_providers():
+                return int(gpu_id)
+            print("[FaceDetector][WARN] CUDAExecutionProvider not available; falling back to CPU.")
+            return -1
+        except Exception as e:
+            print(f"[FaceDetector][WARN] onnxruntime not found or misconfigured ({e}); falling back to CPU.")
+            return -1
+
+    def _initialize_model(self) -> None:
+        """
+        Initialize the InsightFace model (required by BaseFaceDetector).
+        """
+        self.ctx_id = self._pick_ctx_id(self.gpu_id)
+        self.app = FaceAnalysis(name="buffalo_s")
+        self.app.prepare(ctx_id=self.ctx_id, det_size=(self.det_size, self.det_size))
+        print(f"[FaceDetector] InsightFace model initialized with ctx_id={self.ctx_id}")
+
+    def _detect_faces_impl(self, frame: np.ndarray) -> List[DetectedFace]:
+        """
+        Perform face detection using InsightFace (required by BaseFaceDetector).
+
+        Args:
+            frame: Input frame (BGR format)
+
+        Returns:
+            List of detected faces as DetectedFace objects
+        """
+        if self.app is None:
+            raise RuntimeError("Model not initialized. Call initialize() first.")
+
+        # Enhance low-light frames
+        frame_enhanced = self.enhance_lowlight(frame)
+
+        # Detect faces using InsightFace
+        faces = self.app.get(frame_enhanced)
+
+        # Convert to DetectedFace format
+        detected_faces = []
+        for face in faces:
+            # Extract bounding box
+            x1, y1, x2, y2 = map(int, face.bbox)
+
+            # Get confidence (InsightFace provides detection score)
+            confidence = float(face.det_score) if hasattr(face, 'det_score') else 1.0
+
+            # Get landmarks if available
+            landmarks = face.kps if hasattr(face, 'kps') else None
+
+            # Get embedding if available
+            embedding = face.normed_embedding if hasattr(face, 'normed_embedding') else None
+
+            detected_face = DetectedFace(
+                bbox=(x1, y1, x2, y2),
+                confidence=confidence,
+                landmarks=landmarks,
+                embedding=embedding
+            )
+            detected_faces.append(detected_face)
+
+        return detected_faces
+
+    def reload_embedding(self) -> bool:
+        """Reload creator embedding from disk."""
+        try:
+            obj = json.loads(Path(self.embed_path).read_text(encoding="utf-8"))
+            self.creator_embedding = np.array(obj["embedding"], dtype=float)
+            print("[FaceDetector] Reloaded embedding from disk.")
+            return True
+        except Exception as e:
+            print(f"[FaceDetector][WARN] Reload failed: {e}")
+            return False
+
+    def set_dynamic_embedding(self, embedding: np.ndarray) -> bool:
+        """Set creator embedding dynamically from memory (e.g., from enrollment)."""
+        try:
+            if embedding is not None and len(embedding) > 0:
+                self.creator_embedding = np.array(embedding, dtype=float)
+                print(f"[FaceDetector] Set dynamic embedding from memory (shape: {self.creator_embedding.shape})")
+                # Reset all room vote buffers when embedding changes
+                for room_id in self.room_vote_bufs:
+                    self.room_vote_bufs[room_id].clear()
+                return True
+            else:
+                print("[FaceDetector][WARN] Invalid embedding provided.")
+                return False
+        except Exception as e:
+            print(f"[FaceDetector][WARN] Dynamic embedding failed: {e}")
+            return False
+
+    def _get_room_masks(self, room_id: str):
+        """Get or create temporal masks for specific room."""
+        if room_id not in self.room_masks:
+            self.room_masks[room_id] = []
+            self.room_vote_bufs[room_id] = deque(maxlen=5)
+        return self.room_masks[room_id], self.room_vote_bufs[room_id]
+
+    def cleanup_room(self, room_id: str):
+        """Clean up room-specific data when room closes."""
+        if room_id in self.room_masks:
+            del self.room_masks[room_id]
+        if room_id in self.room_vote_bufs:
+            del self.room_vote_bufs[room_id]
+        print(f"[FaceDetector] Cleaned up temporal data for room: {room_id}")
+
+    def set_panic_mode(self, panic: bool):
+        """Toggle panic mode (blur entire frame)."""
+        self.panic_mode = panic
+        print(f"[FaceDetector] Panic mode: {'ON' if panic else 'OFF'}")
+
+    def cosine_distance(self, a: np.ndarray, b: np.ndarray) -> float:
+        """Calculate cosine distance between two embeddings."""
+        a = a / (np.linalg.norm(a) + 1e-9)
+        b = b / (np.linalg.norm(b) + 1e-9)
+        return 1.0 - float(np.dot(a, b))
+
+    def dilate_box(self, box: List[float], W: int, H: int) -> List[int]:
+        """Dilate bounding box by specified pixels."""
+        x1, y1, x2, y2 = box
+        d = self.dilate_px
+        return [
+            max(0, int(x1 - d)),
+            max(0, int(y1 - d)),
+            min(W - 1, int(x2 + d)),
+            min(H - 1, int(y2 + d))
+        ]
+
+    def box_to_ellipse(self, box: List[int], W: int, H: int) -> Dict[str, Any]:
+        """Convert bounding box to ellipse parameters for smoother face blur."""
+        x1, y1, x2, y2 = box
+
+        # Calculate center
+        center_x = (x1 + x2) // 2
+        center_y = (y1 + y2) // 2
+
+        # Calculate axes (make it slightly taller for natural face shape)
+        width = x2 - x1
+        height = y2 - y1
+
+        # Ellipse axes (radius): width is horizontal, height is vertical
+        # Make it slightly larger and more oval-shaped
+        axis_x = int(width * 0.6)  # Horizontal radius (60% of width for nice oval)
+        axis_y = int(height * 0.7)  # Vertical radius (70% of height for elongated face shape)
+
+        return {
+            'center': (center_x, center_y),
+            'axes': (axis_x, axis_y),
+            'angle': 0,  # No rotation for frontal faces
+            'box': box  # Keep original box for reference
+        }
+
+    def enhance_lowlight(self, frame: np.ndarray) -> np.ndarray:
+        """Enhance low-light frames using CLAHE."""
+        if frame.mean() < self.lowlight_trigger:
+            ycrcb = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)
+            y, cr, cb = cv2.split(ycrcb)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            y = clahe.apply(y)
+            return cv2.cvtColor(cv2.merge((y, cr, cb)), cv2.COLOR_YCrCb2BGR)
+        return frame
+
+    def detect_faces_tta(self, frame_bgr: np.ndarray, big_size: int = 960, do_flip: bool = True) -> List[List[float]]:
+        """Test-time augmentation for face detection."""
+        H, W = frame_bgr.shape[:2]
+        boxes = []
+
+        # Regular detection
+        for f in self.app.get(frame_bgr):
+            boxes.append(list(map(float, f.bbox)))
+
+        # Horizontal flip augmentation
+        if do_flip:
+            flipped = cv2.flip(frame_bgr, 1)
+            for f in self.app.get(flipped):
+                x1, y1, x2, y2 = map(float, f.bbox)
+                boxes.append([W - x2, y1, W - x1, y2])
+
+        # Scale augmentation
+        if max(H, W) < big_size:
+            scale = big_size / max(H, W)
+            big = cv2.resize(frame_bgr, (int(W * scale), int(H * scale)), interpolation=cv2.INTER_LINEAR)
+            for f in self.app.get(big):
+                x1, y1, x2, y2 = map(float, f.bbox)
+                boxes.append([x1 / scale, y1 / scale, x2 / scale, y2 / scale])
+
+        return self._nms_union(boxes, thr=0.5)
+
+    def _iou(self, a: List[float], b: List[float]) -> float:
+        """Calculate IoU between two boxes."""
+        x1 = max(a[0], b[0])
+        y1 = max(a[1], b[1])
+        x2 = min(a[2], b[2])
+        y2 = min(a[3], b[3])
+        iw = max(0, x2 - x1)
+        ih = max(0, y2 - y1)
+        inter = iw * ih
+        ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter + 1e-9
+        return inter / ua
+
+    def _nms_union(self, boxes: List[List[float]], thr: float = 0.5) -> List[List[float]]:
+        """Non-maximum suppression with union."""
+        out = []
+        for b in boxes:
+            if not any(self._iou(b, o) > thr for o in out):
+                out.append(b)
+        return out
+
+    def process_frame(self, frame: np.ndarray, frame_id: int,
+                     stride: int = 1, tta_every: int = 0, room_id: str = None) -> Tuple[int, List[List[int]]]:
+        """
+        Process a single frame and return rectangles to be blurred.
+
+        Args:
+            frame: Input frame (BGR format)
+            frame_id: Frame identifier
+            stride: Process every N frames for detection
+            tta_every: Apply TTA every N frames (0 to disable)
+            room_id: Room identifier for multi-room support
+
+        Returns:
+            Tuple of (frame_id, list of rectangles as [x1, y1, x2, y2])
+        """
+        # Initialize model if not already done
+        if not self._initialized:
+            self.initialize()
+
+        H, W = frame.shape[:2]
+        now = time.monotonic()
+
+        # Enhance low-light frames
+        frame_for_det = self.enhance_lowlight(frame)
+
+        new_boxes = []
+
+        if self.panic_mode:
+            # Blur entire frame in panic mode
+            new_boxes.append([0, 0, W - 1, H - 1])
+        else:
+            # Always run face detection, but only run expensive embedding comparison on stride intervals
+            if tta_every > 0 and frame_id % tta_every == 0 and self.creator_embedding is None:
+                # Use TTA only when no whitelist is needed and TTA is enabled
+                face_boxes = self.detect_faces_tta(frame_for_det, big_size=960, do_flip=True)
+                faces = []  # TTA only returns boxes
+            else:
+                # Regular detection (always when we have creator embedding)
+                faces = self.app.get(frame_for_det)
+                face_boxes = [list(map(float, f.bbox)) for f in faces]
+
+            # Log detection results
+            if self.creator_embedding is not None:
+                print(f"[FaceDetector] Detected {len(face_boxes)} faces, {len(faces)} face objects, whitelist available: YES")
+            else:
+                print(f"[FaceDetector] Detected {len(face_boxes)} faces, no whitelist available - will blur all")
+
+            # Find which faces (if any) match the creator by checking only the 3 largest faces
+            # Always run embedding comparison when faces are detected (no caching/stride optimization)
+            creator_matches = set()  # Indices of faces that match creator
+
+            if self.creator_embedding is not None and len(faces) > 0:
+                # Get the 3 largest faces for whitelist checking only
+                face_areas = []
+                for i, (face, box) in enumerate(zip(faces, face_boxes)):
+                    x1, y1, x2, y2 = box
+                    area = (x2 - x1) * (y2 - y1)
+                    face_areas.append((area, i, face, box))
+
+                # Sort by area (largest first) and take top 3
+                face_areas.sort(reverse=True)
+                top_faces = face_areas[:3]
+
+                print(f"[FaceDetector] Processing {len(top_faces)} largest faces for creator matching (out of {len(faces)} total)...")
+
+                for area, i, face, box in top_faces:
+                    try:
+                        # Check if face has embedding
+                        if not hasattr(face, 'normed_embedding'):
+                            print(f"[FaceDetector] Face {i} has no normed_embedding attribute")
+                            continue
+
+                        if face.normed_embedding is None:
+                            print(f"[FaceDetector] Face {i} has None embedding")
+                            continue
+
+                        # Validate embedding shape
+                        if len(face.normed_embedding.shape) != 1 or face.normed_embedding.shape[0] == 0:
+                            print(f"[FaceDetector] Face {i} has invalid embedding shape: {face.normed_embedding.shape}")
+                            continue
+
+                        # Calculate distance
+                        distance = self.cosine_distance(self.creator_embedding, face.normed_embedding)
+                        match = distance <= self.threshold
+
+                        if match:
+                            creator_matches.add(i)
+                            print(f"[FaceDetector] Face {i} MATCHES creator (distance: {distance:.3f}, area: {area:.0f})")
+                        else:
+                            print(f"[FaceDetector] Face {i} does NOT match (distance: {distance:.3f}, area: {area:.0f})")
+
+                    except Exception as e:
+                        print(f"[FaceDetector] Error processing face {i}: {e}")
+                        continue
+
+                # Get room-specific vote buffer
+                if room_id:
+                    _, room_vote_buf_temp = self._get_room_masks(room_id)
+                else:
+                    room_vote_buf_temp = deque(maxlen=5)
+
+                # Update temporal voting with whether ANY face matched
+                any_match = len(creator_matches) > 0
+                room_vote_buf_temp.append(any_match)
+
+                # More stable voting: allow creator if at least 2 out of last 5 frames had a match
+                # Special case: if we have fewer than 3 frames, be more lenient (50% threshold)
+                vote_count = sum(room_vote_buf_temp)
+                buffer_size = len(room_vote_buf_temp)
+
+                if buffer_size < 3:
+                    # Be more lenient for initial frames: require at least 50% matches
+                    creator_allowed = vote_count >= max(1, buffer_size // 2)
+                else:
+                    # Standard voting: require at least 2 out of 5 frames
+                    creator_allowed = vote_count >= 2
+
+                print(f"[FaceDetector] Temporal voting: {vote_count}/{buffer_size} frames matched, threshold: {'lenient' if buffer_size < 3 else 'standard'}")
+
+                print(f"[FaceDetector] Creator matches: {creator_matches}, allowed: {creator_allowed}")
+            else:
+                creator_allowed = False
+                print(f"[FaceDetector] No creator embedding or no face embeddings available")
+
+            # Decide per face: blur unless it's the creator
+            for i, box in enumerate(face_boxes):
+                # Simple logic: if creator is allowed and this face matches creator, don't blur
+                if creator_allowed and i in creator_matches:
+                    should_blur = False
+                    print(f"[FaceDetector] Face {i} whitelisted (creator match)")
+                else:
+                    should_blur = True
+                    print(f"[FaceDetector] Face {i} will be blurred")
+
+                if should_blur:
+                    new_boxes.append(self.dilate_box(box, W, H))
+
+        # Get room-specific temporal data
+        if room_id:
+            room_masks, room_vote_buf = self._get_room_masks(room_id)
+        else:
+            # Fallback for legacy calls
+            room_masks, room_vote_buf = [], deque(maxlen=5)
+
+        # Temporal smoothing: update ROOM-SPECIFIC mask list
+        expiry = now + self.smooth_ms / 1000.0
+        room_masks[:] = [m for m in room_masks if m[0] > now] + [(expiry, b) for b in new_boxes]
+
+        # Return ONLY this room's active masks
+        rectangles = [box for _, box in room_masks]
+
+        # Convert rectangles to ellipses for smoother face blur
+        ellipses = [self.box_to_ellipse(box, W, H) for box in rectangles]
+
+        # Debug logging
+        print(f"[FaceDetector] Frame {frame_id}: new_boxes={len(new_boxes)}, active_masks={len(rectangles)}, ellipses={len(ellipses)}")
+
+        return frame_id, rectangles, ellipses
+
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get information about the current model configuration."""
+        return {
+            "model_type": "face_detector",
+            "embed_path": self.embed_path,
+            "has_creator_embedding": self.creator_embedding is not None,
+            "threshold": self.threshold,
+            "dilate_px": self.dilate_px,
+            "smooth_ms": self.smooth_ms,
+            "panic_mode": self.panic_mode,
+            "ctx_id": self.ctx_id
+        }
+
+
+if __name__ == "__main__":
+    print("="*70)
+    print("InsightFace Face Detector - Test")
+    print("="*70)
+    print()
+
+    # Initialize detector
+    detector = FaceDetector()
+    print()
+
+    # Create test frame with synthetic face
+    test_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    # Add some shapes to simulate face
+    cv2.rectangle(test_frame, (100, 100), (200, 200), (255, 255, 255), -1)
+    cv2.circle(test_frame, (150, 140), 20, (100, 100, 100), -1)
+    cv2.circle(test_frame, (170, 140), 20, (100, 100, 100), -1)
+    cv2.ellipse(test_frame, (150, 170), (30, 15), 0, 0, 180, (100, 100, 100), -1)
+
+    # Test detection
+    print("Testing detection on synthetic frame...")
+    frame_id, rectangles = detector.process_frame(test_frame, frame_id=0)
+
+    print(f"Detected {len(rectangles)} face regions to blur")
+    for i, rect in enumerate(rectangles):
+        print(f"  Region {i+1}: {rect}")
+
+    print()
+    print("="*70)
+    print("READY: InsightFace face detector is working!")
+    print("="*70)
+    print()
+    print("This detector:")
+    print("  - Uses InsightFace buffalo_s model")
+    print("  - Supports creator whitelist functionality")
+    print("  - Room-specific temporal smoothing")
+    print("  - CLAHE low-light enhancement")
+    print("  - Test-time augmentation (TTA)")

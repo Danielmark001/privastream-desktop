@@ -1,0 +1,59 @@
+import * as remote from '@electron/remote';
+import React, { useRef } from 'react';
+import { $t } from 'services/i18n';
+import useBaseElement from './hooks';
+import { Services } from 'components-react/service-provider';
+import BrowserView from 'components-react/shared/BrowserView';
+import styles from './RecentEvents.m.less';
+import { useVuex } from 'components-react/hooks';
+import Utils from 'services/utils';
+const mins = { x: 360, y: 150 };
+export function LegacyEvents(p) {
+    const { UserService, RecentEventsService, MagicLinkService, WindowsService } = Services;
+    const { hideStyleBlockers } = useVuex(() => ({
+        hideStyleBlockers: WindowsService.state[Utils.getCurrentUrlParams().windowId].hideStyleBlockers,
+    }));
+    const containerRef = useRef(null);
+    const magicLinkDisabled = useRef(false);
+    function popoutRecentEvents() {
+        return RecentEventsService.actions.openRecentEventsWindow();
+    }
+    function handleBrowserViewReady(view) {
+        view.webContents.setWindowOpenHandler(details => {
+            const match = details.url.match(/dashboard\/([^\/^\?]*)/);
+            if (match && match[1] === 'recent-events') {
+                popoutRecentEvents();
+            }
+            else if (match) {
+                if (magicLinkDisabled.current)
+                    return { action: 'deny' };
+                magicLinkDisabled.current = true;
+                MagicLinkService.actions.return
+                    .getDashboardMagicLink(match[1])
+                    .then(link => {
+                    remote.shell.openExternal(link);
+                })
+                    .catch(e => {
+                    console.error('Error generating dashboard magic link', e);
+                });
+                magicLinkDisabled.current = false;
+            }
+            else {
+                remote.shell.openExternal(details.url);
+            }
+            return { action: 'deny' };
+        });
+    }
+    const { renderElement } = useBaseElement(React.createElement(Element, null), mins, containerRef.current);
+    function Element() {
+        if (!UserService.isLoggedIn) {
+            return (React.createElement("div", { className: styles.eventContainer },
+                React.createElement("div", { className: styles.empty }, $t('There are no events to display'))));
+        }
+        return (React.createElement("div", { style: { height: '100%' } },
+            React.createElement(BrowserView, { className: styles.eventContainer, src: UserService.recentEventsUrl(), setLocale: true, onReady: (view) => handleBrowserViewReady(view), hidden: hideStyleBlockers })));
+    }
+    return (React.createElement("div", { ref: containerRef, style: { height: '100%' } }, renderElement()));
+}
+LegacyEvents.mins = mins;
+//# sourceMappingURL=LegacyEvents.js.map

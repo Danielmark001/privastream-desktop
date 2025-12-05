@@ -35,6 +35,7 @@ const {
 const path = require('path');
 const remote = require('@electron/remote/main');
 const fs = require('fs');
+const { spawn } = require('child_process');
 
 // Game overlay is Windows only
 let overlay;
@@ -195,7 +196,7 @@ function humanFileSize(bytes, si) {
 }
 
 console.log('=================================');
-console.log('Streamlabs Desktop');
+console.log('PrivaStream Desktop');
 console.log(`Version: ${process.env.SLOBS_VERSION}`);
 console.log(`OS: ${os.platform()} ${os.release()}`);
 console.log(`Arch: ${process.arch}`);
@@ -223,8 +224,8 @@ app.on('ready', () => {
       // This error code indicates a read only file system
       if (e.code === 'EROFS') {
         dialog.showErrorBox(
-          'Streamlabs Desktop',
-          'Please run Streamlabs Desktop from your Applications folder. Streamlabs Desktop cannot run directly from this disk image.',
+          'PrivaStream Desktop',
+          'Please run PrivaStream Desktop from your Applications folder. PrivaStream Desktop cannot run directly from this disk image.',
         );
         app.exit();
       }
@@ -270,8 +271,37 @@ function openDevTools() {
 // These windows are waiting for services to be ready
 const waitingVuexStores = [];
 let workerInitFinished = false;
+let sidecarProcess;
+
+function startSidecar() {
+  let sidecarPath = path.join(app.getAppPath(), 'sidecar', 'local_server.py');
+  
+  // In production, app.getAppPath() returns path to app.asar
+  // We need to point to app.asar.unpacked for the sidecar
+  if (app.isPackaged) {
+    sidecarPath = sidecarPath.replace('app.asar', 'app.asar.unpacked');
+  }
+
+  console.log('Starting sidecar from:', sidecarPath);
+  
+  const sidecarDir = path.dirname(sidecarPath);
+
+  sidecarProcess = spawn('python', [sidecarPath], {
+    cwd: sidecarDir,
+    stdio: 'inherit'
+  });
+
+  sidecarProcess.on('error', (err) => {
+    console.error('Failed to start sidecar:', err);
+  });
+
+  sidecarProcess.on('exit', (code, signal) => {
+    console.log(`Sidecar exited with code ${code} and signal ${signal}`);
+  });
+}
 
 async function startApp() {
+  startSidecar();
   const crashHandler = require('crash-handler');
   const isDevMode = process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'test';
   const crashHandlerLogPath = app.getPath('userData');
@@ -306,7 +336,7 @@ async function startApp() {
   function handleFinishedReport() {
     dialog.showErrorBox(
       'Something Went Wrong',
-      'An unexpected error occured and Streamlabs Desktop must be shut down.\n' +
+      'An unexpected error occured and PrivaStream Desktop must be shut down.\n' +
         'Please restart the application.',
     );
 
@@ -326,7 +356,7 @@ async function startApp() {
 
     if (submitURL) {
       crashReporter.start({
-        productName: 'streamlabs-obs',
+        productName: 'privastream-desktop',
         companyName: 'streamlabs',
         ignoreSystemCrashHandler: true,
         submitURL,
@@ -386,7 +416,7 @@ async function startApp() {
     show: false,
     frame: false,
     titleBarStyle: 'hidden',
-    title: 'Streamlabs Desktop',
+    title: 'PrivaStream Desktop',
     backgroundColor: '#17242D',
     webPreferences: {
       nodeIntegration: true,
@@ -440,6 +470,7 @@ async function startApp() {
 
   // This needs to be explicitly handled on Mac
   app.on('before-quit', e => {
+    if (sidecarProcess) sidecarProcess.kill();
     if (!shutdownStarted) {
       e.preventDefault();
       mainWindow.close();

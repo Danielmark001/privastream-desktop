@@ -1,0 +1,180 @@
+import { Services } from 'components-react/service-provider';
+import React, { forwardRef, useEffect, useState } from 'react';
+import Display from 'components-react/shared/Display';
+import { ModalLayout } from 'components-react/shared/ModalLayout';
+import { Button, Menu, Modal } from 'antd';
+import Scrollable from 'components-react/shared/Scrollable';
+import { ListInput, TextInput } from 'components-react/shared/inputs';
+import { useChildWindowParams, useVuex } from 'components-react/hooks';
+import Form, { useForm } from 'components-react/shared/inputs/Form';
+import { ObsForm } from 'components-react/obs/ObsForm';
+import widgetsCss from 'components-react/widgets/common/WidgetLayout.m.less';
+import css from './SourceFilters.m.less';
+import { ReactSortable } from 'react-sortablejs';
+import cx from 'classnames';
+import { $t } from 'services/i18n';
+const FilterMenuContainer = forwardRef((props, ref) => {
+    return (React.createElement("ul", { className: "ant-menu ant-menu-root ant-menu-vertical ant-menu-dark", ref: ref }, props.children));
+});
+export default function SourceFilters() {
+    const { WindowsService, SourceFiltersService, SourcesService, EditorCommandsService } = Services;
+    const sourceId = useChildWindowParams('sourceId');
+    const { filters, isVisual, preset } = useVuex(() => {
+        var _a;
+        return ({
+            filters: SourceFiltersService.views.filtersBySourceId(sourceId),
+            isVisual: !!((_a = SourcesService.views.getSource(sourceId)) === null || _a === void 0 ? void 0 : _a.video),
+            preset: SourceFiltersService.views.presetFilterBySourceId(sourceId),
+        });
+    });
+    const presetValue = preset
+        ? SourceFiltersService.views.parsePresetValue(preset.settings.image_path)
+        : 'none';
+    const [selectedFilter, setSelectedFilter] = useState(filters && filters.length > 0 ? filters[0].name : null);
+    const [formData, setFormData] = useState();
+    const [modal, setModal] = useState(false);
+    if (selectedFilter && !(filters === null || filters === void 0 ? void 0 : filters.find(f => f.name === selectedFilter))) {
+        if (filters === null || filters === void 0 ? void 0 : filters.length) {
+            setSelectedFilter(filters[0].name);
+        }
+        else {
+            setSelectedFilter(null);
+        }
+    }
+    function setPreset(val) {
+        if (val === 'none') {
+            SourceFiltersService.actions.removePresetFilter(sourceId);
+        }
+        else {
+            SourceFiltersService.actions.addPresetFilter(sourceId, val);
+        }
+    }
+    function loadFormData(filterName) {
+        if (selectedFilter) {
+            setFormData(SourceFiltersService.getPropertiesFormData(sourceId, filterName));
+        }
+    }
+    useEffect(() => {
+        if (!selectedFilter)
+            return;
+        loadFormData(selectedFilter);
+        const subscription = SourceFiltersService.filterUpdated.subscribe(filter => {
+            if (filter.name === selectedFilter) {
+                loadFormData(selectedFilter);
+            }
+        });
+        return () => subscription.unsubscribe();
+    }, [sourceId, selectedFilter]);
+    useEffect(() => {
+        const subscription = SourcesService.sourceRemoved.subscribe(s => {
+            if (s.sourceId === sourceId) {
+                WindowsService.actions.closeChildWindow();
+            }
+        });
+        return () => subscription.unsubscribe();
+    }, [sourceId]);
+    const addFilterKey = '__AddNewFilter';
+    return (React.createElement(ModalLayout, { fixedChild: modal ? React.createElement("div", null) : React.createElement(Display, { sourceId: sourceId }), bodyStyle: { padding: 0 } },
+        React.createElement("div", { style: { display: 'flex', borderTop: '1px solid var(--border)', height: '100%' }, className: widgetsCss.widgetLayout },
+            React.createElement("div", { style: {
+                    width: 270,
+                    borderRight: '1px solid var(--border)',
+                    height: '100%',
+                    background: 'var(--section)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                } },
+                isVisual && (React.createElement("div", { style: { padding: '20px 20px 0' } },
+                    React.createElement(Form, { layout: "vertical" },
+                        React.createElement(ListInput, { label: "Visual Preset", options: SourceFiltersService.views.presetFilterOptionsReact, value: presetValue, onChange: setPreset, allowClear: false })))),
+                React.createElement(Menu, { theme: "dark", selectable: false, onClick: () => setModal(true) },
+                    isVisual && React.createElement(Menu.Divider, null),
+                    React.createElement(Menu.Item, { key: addFilterKey },
+                        React.createElement("i", { className: "icon-add", style: { marginRight: 8 } }),
+                        "Add Filter"),
+                    React.createElement(Menu.Divider, null)),
+                React.createElement(Scrollable, { style: { flexGrow: 1 } },
+                    React.createElement(ReactSortable, { list: filters === null || filters === void 0 ? void 0 : filters.map(f => {
+                            return { id: f.name };
+                        }), setList: () => { }, onEnd: e => {
+                            if (!filters)
+                                return;
+                            const filterName = filters[e.oldIndex].name;
+                            EditorCommandsService.executeCommand('ReorderFiltersCommand', sourceId, filterName, e.newIndex - e.oldIndex);
+                        }, tag: FilterMenuContainer, animation: 200 }, filters === null || filters === void 0 ? void 0 : filters.map(filter => {
+                        return (React.createElement("li", { key: filter.name, className: cx(css.filterMenuItem, 'ant-menu-item', {
+                                ['ant-menu-item-selected']: filter.name === selectedFilter,
+                            }), onClick: () => setSelectedFilter(filter.name) },
+                            React.createElement("div", { style: { display: 'flex', flexDirection: 'row', alignItems: 'center' } },
+                                React.createElement("span", { style: {
+                                        flexGrow: 1,
+                                        whiteSpace: 'nowrap',
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                    } }, filter.name),
+                                React.createElement("i", { className: `${filter.visible ? 'icon-view' : 'icon-hide'} icon-button icon-button--lg`, onClick: e => {
+                                        e.stopPropagation();
+                                        EditorCommandsService.actions.executeCommand('ToggleFilterCommand', sourceId, filter.name);
+                                    } }),
+                                React.createElement("i", { className: "icon-trash icon-button icon-button--lg", onClick: e => {
+                                        e.stopPropagation();
+                                        EditorCommandsService.actions.executeCommand('RemoveFilterCommand', sourceId, filter.name);
+                                    } }))));
+                    })))),
+            React.createElement("div", { style: { flexGrow: 1 } },
+                React.createElement(Scrollable, { style: { height: '100%' } },
+                    selectedFilter && formData && !!formData.length && (React.createElement(ObsForm, { value: formData, onChange: newData => {
+                            EditorCommandsService.actions.executeCommand('EditFilterPropertiesCommand', sourceId, selectedFilter, newData);
+                        }, layout: "horizontal", style: { padding: 20 }, key: selectedFilter })),
+                    selectedFilter && !(formData === null || formData === void 0 ? void 0 : formData.length) && (React.createElement("div", { style: { padding: 20 } }, $t('No settings are available for this filter')))))),
+        React.createElement(Modal, { footer: null, visible: modal, onCancel: () => setModal(false), getContainer: false },
+            React.createElement(CreateFilterForm, { sourceId: sourceId, onSubmit: name => {
+                    setModal(false);
+                    setSelectedFilter(name);
+                } }))));
+}
+function CreateFilterForm(p) {
+    const { SourceFiltersService, EditorCommandsService } = Services;
+    const types = SourceFiltersService.views.getTypesForSource(p.sourceId).map(t => {
+        return {
+            value: t.type,
+            label: t.description,
+        };
+    });
+    const [type, setTypeState] = useState(types[0].value);
+    const [name, setName] = useState(SourceFiltersService.views.suggestName(p.sourceId, types[0].label));
+    const form = useForm();
+    function setType(type) {
+        var _a;
+        setName(SourceFiltersService.views.suggestName(p.sourceId, (_a = types.find(t => t.value === type)) === null || _a === void 0 ? void 0 : _a.label));
+        setTypeState(type);
+    }
+    function submit() {
+        EditorCommandsService.actions.return
+            .executeCommand('AddFilterCommand', p.sourceId, type, name)
+            .then(() => {
+            p.onSubmit(name);
+        });
+    }
+    function uniqueNameValidator(rule, value, callback) {
+        const suggested = SourceFiltersService.views.suggestName(p.sourceId, value);
+        if (value === suggested) {
+            callback();
+        }
+        else {
+            callback($t('That name is already taken'));
+        }
+    }
+    return (React.createElement(React.Fragment, null,
+        React.createElement("h2", null, "Add New Filter"),
+        React.createElement(Form, { onFinish: submit, form: form, name: "addFilterForm" },
+            React.createElement(ListInput, { value: type, onChange: v => setType(v), options: types, label: $t('Filter type'), name: "filterType" }),
+            React.createElement(TextInput, { value: name, onChange: v => setName(v), label: $t('Filter name'), rules: [
+                    { required: true },
+                    { type: 'string', min: 1 },
+                    { validator: uniqueNameValidator },
+                ], uncontrolled: false, name: "filterName" }),
+            React.createElement("div", { style: { textAlign: 'right' } },
+                React.createElement(Button, { type: "primary", htmlType: "submit" }, $t('Add'))))));
+}
+//# sourceMappingURL=SourceFilters.js.map

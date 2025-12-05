@@ -5,8 +5,8 @@ const os = require('os');
 const cp = require('child_process');
 
 const base = {
-  appId: 'com.streamlabs.slobs',
-  productName: 'Streamlabs Desktop',
+  appId: 'com.privastream.desktop',
+  productName: 'PrivaStream Desktop',
   icon: 'media/images/icon.ico',
   files: [
     'bundles',
@@ -23,6 +23,7 @@ const base = {
     'obs-api',
     'updater/mac/index.html',
     'updater/mac/Updater.js',
+    'sidecar',
   ],
   directories: {
     buildResources: '.',
@@ -35,13 +36,13 @@ const base = {
     allowToChangeInstallationDirectory: true,
     include: 'installer.nsh',
   },
-  asarUnpack : ["**/node-libuiohook/**", "**/node-fontinfo/**", "**/font-manager/**", "**/game_overlay/**","**/color-picker/**"],
+  asarUnpack : ["**/node-libuiohook/**", "**/node-fontinfo/**", "**/font-manager/**", "**/game_overlay/**","**/color-picker/**", "sidecar/**"],
   publish: {
     provider: 'generic',
     url: 'https://slobs-cdn.streamlabs.com',
   },
   win: {
-    executableName: 'Streamlabs OBS',
+    executableName: 'PrivaStream Desktop',
     extraFiles: ['LICENSE', 'AGREEMENT', 'shared-resources/**/*', '!shared-resources/README'],
     rfc3161TimeStampServer: 'http://timestamp.digicert.com',
     timeStampServer: 'http://timestamp.digicert.com',
@@ -69,7 +70,7 @@ const base = {
     },
   },
   mac: {
-    identity: (process.env.APPLE_SLD_IDENTITY) ? process.env.APPLE_SLD_IDENTITY : 'Streamlabs LLC (UT675MBB9Q)',
+    identity: (process.env.APPLE_SLD_IDENTITY) ? process.env.APPLE_SLD_IDENTITY : 'PrivaStream',
     extraFiles: [
       'shared-resources/**/*',
       '!shared-resources/README',
@@ -89,12 +90,12 @@ const base = {
     entitlements: 'electron-builder/entitlements.plist',
     entitlementsInherit: 'electron-builder/entitlements.plist',
     extendInfo: {
-      NSAppleEventsUsageDescription: 'Allow Streamlabs Desktop to run Apple scripts.',
+      NSAppleEventsUsageDescription: 'Allow PrivaStream Desktop to run Apple scripts.',
       NSAppleScriptEnabled: 'YES',
       CFBundleURLTypes: [
         {
-          CFBundleURLName: 'Streamlabs OBS Link',
-          CFBundleURLSchemes: ['slobs'],
+          CFBundleURLName: 'PrivaStream Link',
+          CFBundleURLSchemes: ['privastream'],
         },
       ],
     },

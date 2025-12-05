@@ -27,6 +27,7 @@ export enum EMenuItemKey {
   Settings = 'settings',
   Login = 'login',
   AI = 'ai',
+  Privacy = 'privacy',
 }
 
 /**
@@ -163,6 +164,7 @@ export const menuTitles = (item: EMenuItemKey | ESubMenuItemKey | string) => {
     [ESubMenuItemKey.TipSettings]: $t('Tip Settings'),
     [ESubMenuItemKey.Multistream]: $t('Multistream'),
     [EMenuItemKey.AI]: $t(ESettingsCategory.AI),
+    [EMenuItemKey.Privacy]: $t('Privacy'),
   }[item];
 };
 
@@ -180,6 +182,7 @@ export const SideBarTopNavData = (): IMenu => ({
     SideNavMenuItems()[EMenuItemKey.Highlighter],
     SideNavMenuItems()[EMenuItemKey.RecordingHistory],
     SideNavMenuItems()[EMenuItemKey.ThemeAudit],
+    SideNavMenuItems()[EMenuItemKey.Privacy],
   ],
 });
 
@@ -325,6 +328,13 @@ export const SideNavMenuItems = (): TMenuItems => ({
   [EMenuItemKey.Login]: {
     key: EMenuItemKey.Login,
     icon: 'icon-user',
+    isActive: true,
+    isExpanded: false,
+  },
+  [EMenuItemKey.Privacy]: {
+    key: EMenuItemKey.Privacy,
+    target: 'Privacy',
+    icon: 'fas fa-lock',
     isActive: true,
     isExpanded: false,
   },

@@ -85,6 +85,7 @@ declare module '*.lazy.less';
 declare module 'streamlabs-beaker';
 declare module '*.vert';
 declare module '*.frag';
+declare module '*.png';
 declare module 'mark.js';
 declare module 'vuejs-datepicker';
 declare module 'vuejs-datepicker/dist/locale';

@@ -21,7 +21,9 @@ export type TAppPage =
   | 'Highlighter'
   | 'Grow'
   | 'ThemeAudit'
-  | 'RecordingHistory';
+  | 'RecordingHistory'
+  | 'Privacy';
+
 
 interface INavigationState {
   currentPage: TAppPage;

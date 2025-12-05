@@ -2,9 +2,9 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "strictNullChecks": true,
-    "jsx": "react",
     "types": [
-      "react"
+      "react",
+      "antd"
     ]
   },
   "include": ["./**/*", "../index.d.ts"],

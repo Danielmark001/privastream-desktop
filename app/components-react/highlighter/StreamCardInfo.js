@@ -1,0 +1,75 @@
+import { isAiClip } from 'services/highlighter/models/highlighter.models';
+import { getEventConfig } from 'services/highlighter/models/game-config.models';
+import React from 'react';
+import Tooltip from 'components-react/shared/Tooltip';
+import { $t } from 'services/i18n';
+export default function StreamCardInfo({ clips, game, }) {
+    const aiClips = [];
+    const manualClips = [];
+    clips.forEach(clip => {
+        if (isAiClip(clip)) {
+            aiClips.push(clip);
+        }
+        else {
+            manualClips.push(clip);
+        }
+    });
+    const eventTypeCounts = {};
+    const uniqueRounds = new Set();
+    aiClips.forEach(clip => {
+        if (clip.aiInfo.metadata.round) {
+            uniqueRounds.add(clip.aiInfo.metadata.round);
+        }
+        clip.aiInfo.inputs.forEach(input => {
+            if (eventTypeCounts[input.type]) {
+                eventTypeCounts[input.type] += 1;
+            }
+            else {
+                eventTypeCounts[input.type] = 1;
+            }
+        });
+    });
+    if (uniqueRounds.size > 0) {
+        eventTypeCounts['round'] = uniqueRounds.size;
+    }
+    if (manualClips.length > 0) {
+        eventTypeCounts['manual'] = manualClips.length;
+    }
+    const stringsToShow = Object.entries(eventTypeCounts)
+        .map(([type, count]) => {
+        const eventInfo = getEventConfig(game, type);
+        if (eventInfo) {
+            return {
+                emoji: eventInfo.emoji,
+                description: count === 1 ? eventInfo.description.singular : eventInfo.description.plural,
+                orderPosition: eventInfo.orderPriority,
+                count,
+                type,
+            };
+        }
+        return {
+            emoji: '⚡',
+            description: count === 1 ? type : `${type}s`,
+            count,
+            orderPosition: 99,
+            type,
+        };
+    })
+        .sort((a, b) => a.orderPosition - b.orderPosition);
+    return (React.createElement(Tooltip, { title: stringsToShow
+            .map(item => `${item.emoji} ${item.count} ${item.description}`)
+            .join(' | ') },
+        React.createElement("div", { className: "stream-card-info", style: {
+                display: 'block',
+                overflow: 'hidden',
+                whiteSpace: 'nowrap',
+                textOverflow: 'ellipsis',
+            } }, stringsToShow.length > 0 ? (stringsToShow.map((item, index) => (React.createElement(React.Fragment, { key: index },
+            React.createElement("span", { style: { marginRight: '10px' } },
+                item.emoji,
+                " ",
+                item.count,
+                " ",
+                item.description))))) : (React.createElement("span", null, $t('No events found'))))));
+}
+//# sourceMappingURL=StreamCardInfo.js.map

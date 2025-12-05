@@ -13,3 +13,5 @@ export { default as Grow } from './grow/Grow';
 export { default as LayoutEditor } from './layout-editor/LayoutEditor';
 export { default as Onboarding } from './onboarding/Onboarding';
 export { default as StreamScheduler } from './stream-scheduler/StreamScheduler';
+export { default as Privacy } from './PrivacyPage';
+

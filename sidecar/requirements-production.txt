@@ -1,0 +1,24 @@
+# Production Requirements - Minimal for YuNet Face Detection
+# Optimized for serverless deployment (Railway, Render, etc.)
+
+# Web Framework
+Flask==3.0.0
+Flask-CORS==4.0.0
+Flask-Limiter==3.5.0
+python-dotenv==1.1.1
+gunicorn==21.2.0
+
+# Data Validation
+pydantic==2.11.7
+pydantic_core==2.33.2
+pydantic-settings==2.8.1
+
+# OpenCV (CPU-only for serverless)
+opencv-python-headless==4.10.0.84
+
+# Numpy (required by OpenCV)
+numpy==1.26.4
+
+# Utilities
+requests==2.32.5
+Pillow==11.0.0
