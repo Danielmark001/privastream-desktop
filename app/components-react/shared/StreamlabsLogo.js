@@ -1,5 +1,5 @@
 import React from 'react';
-import logo from '../../../../media/images/privastream_logo.png';
+import logo from '../../../../media/images/privastream_logo.svg';
 export default function StreamlabsLogo({ color = 'white', className }) {
     return (React.createElement("div", { style: { display: 'flex', alignItems: 'center', gap: '12px' }, className: className },
         React.createElement("img", { src: logo, alt: "PrivaStream Logo", style: { height: '40px', width: 'auto' } }),
